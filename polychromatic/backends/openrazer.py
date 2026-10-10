@@ -152,7 +152,14 @@ class OpenRazerBackend(Backend):
         except Exception:
             return []
         for rdevice in self.devman.devices:
-            devices.append(self._get_device(rdevice))
+            # A single unreachable device (e.g. a wireless mouse that is asleep,
+            # or a dongle whose mouse is currently connected over USB instead)
+            # must not abort enumeration of the others.
+            try:
+                devices.append(self._get_device(rdevice))
+            except Exception as e:
+                self.debug("Skipping device that could not be read ({0}): {1}".format(
+                    getattr(rdevice, "name", "unknown"), str(e)))
         return devices
 
     def get_device_by_name(self, name):
@@ -1492,14 +1499,26 @@ class OpenRazerBackend(Backend):
         options = []
 
         if rdevice.has("scroll_mode"):
-            tactile = Backend.Option.Parameter()
-            tactile.data = 0
-            tactile.label = self._("Tactile")
-            tactile.default = True
+            mode_labels = {
+                0: self._("Tactile"),
+                1: self._("Free Spin"),
+                2: self._("Precision Tactile"),
+            }
 
-            free_spin = Backend.Option.Parameter()
-            free_spin.data = 1
-            free_spin.label = self._("Free Spin")
+            # Newer devices advertise which modes they support; older ones
+            # only offer tactile/free spin.
+            if rdevice.has("scroll_mode_options"):
+                supported_modes = rdevice.scroll_mode_options
+            else:
+                supported_modes = [0, 1]
+
+            mode_params = []
+            for mode in supported_modes:
+                param = Backend.Option.Parameter()
+                param.data = mode
+                param.label = mode_labels.get(mode, str(mode))
+                param.default = (mode == 0)
+                mode_params.append(param)
 
             class ScrollMode(Backend.MultipleChoiceOption):
                 def __init__(self, rdevice):
@@ -1507,8 +1526,9 @@ class OpenRazerBackend(Backend):
                     self._rdevice = rdevice
 
                 def refresh(self):
-                    tactile.active = rdevice.scroll_mode == 0
-                    free_spin.active = rdevice.scroll_mode == 1
+                    current = self._rdevice.scroll_mode
+                    for param in mode_params:
+                        param.active = current == param.data
 
                 def apply(self, value):
                     self._rdevice.scroll_mode = int(value)
@@ -1517,7 +1537,7 @@ class OpenRazerBackend(Backend):
             scroll_mode.uid = "scroll_mode"
             scroll_mode.label = self._("Scroll Mode")
             scroll_mode.icon = self.get_icon("devices", "mouse")
-            scroll_mode.parameters = [tactile, free_spin]
+            scroll_mode.parameters = mode_params
             scroll_mode.refresh()
             options.append(scroll_mode)
 
